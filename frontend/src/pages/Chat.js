@@ -26,6 +26,9 @@ export default function Chat({ token, user, onLogout }) {
   const [showAddMember, setShowAddMember] = useState(false);
   const [memberEmail, setMemberEmail] = useState("");
   const [isUploading, setIsUploading] = useState(false);
+  const [oldestTimestamp, setOldestTimestamp] = useState(null);
+  const [hasMore, setHasMore] = useState(false);
+  const [loadingMore, setLoadingMore] = useState(false);
   const fileInputRef = useRef(null);
   const scrollRef = useRef(null);
 
@@ -48,22 +51,30 @@ export default function Chat({ token, user, onLogout }) {
 
       if (data.type === "chat_message") {
         setMessages((prev) => {
-          const messageExists = prev.some(msg => msg.id === data.id);
-          if (messageExists) {
-            return prev;
+          if (prev.some(msg => msg.id === data.id)) return prev;
+
+          const confirmed = {
+            id: data.id,
+            room_id: data.room_id,
+            user_id: data.user_id,
+            username: data.username,
+            content: data.content,
+            timestamp: data.timestamp,
+            attachments: data.attachments || []
+          };
+
+          if (data.user_id === user?.id) {
+            const tempIdx = prev.findLastIndex(
+              m => m.id.startsWith("temp-") && m.room_id === data.room_id && m.content === data.content
+            );
+            if (tempIdx !== -1) {
+              const updated = [...prev];
+              updated[tempIdx] = confirmed;
+              return updated;
+            }
           }
-          return [
-            ...prev,
-            {
-              id: data.id,
-              room_id: data.room_id,
-              user_id: data.user_id,
-              username: data.username,
-              content: data.content,
-              timestamp: data.timestamp,
-              attachments: data.attachments || []
-            },
-          ];
+
+          return [...prev, confirmed];
         });
       } else if (data.type === "presence_update") {
         setOnlineUsers(data.online_users || {});
@@ -133,6 +144,8 @@ export default function Chat({ token, user, onLogout }) {
   const selectRoom = async (room) => {
     setActiveRoom(room);
     setMessages([]);
+    setOldestTimestamp(null);
+    setHasMore(false);
 
     if (ws && ws.readyState === WebSocket.OPEN) {
       ws.send(JSON.stringify({ action: "join_room", room_id: room.id }));
@@ -142,9 +155,37 @@ export default function Chat({ token, user, onLogout }) {
       const response = await axios.get(`${API}/rooms/${room.id}/messages`, {
         headers: { Authorization: `Bearer ${token}` },
       });
-      setMessages(response.data);
+      const data = response.data;
+      setMessages(data);
+      if (data.length > 0) {
+        setOldestTimestamp(data[0].timestamp);
+        setHasMore(data.length === 50);
+      }
     } catch (error) {
       toast.error("Failed to load messages");
+    }
+  };
+
+  const loadOlderMessages = async () => {
+    if (!activeRoom || !oldestTimestamp || loadingMore) return;
+    setLoadingMore(true);
+    try {
+      const response = await axios.get(
+        `${API}/rooms/${activeRoom.id}/messages?before=${encodeURIComponent(oldestTimestamp)}&limit=50`,
+        { headers: { Authorization: `Bearer ${token}` } }
+      );
+      const older = response.data;
+      if (older.length > 0) {
+        setMessages((prev) => [...older, ...prev]);
+        setOldestTimestamp(older[0].timestamp);
+        setHasMore(older.length === 50);
+      } else {
+        setHasMore(false);
+      }
+    } catch (error) {
+      toast.error("Failed to load older messages");
+    } finally {
+      setLoadingMore(false);
     }
   };
 
@@ -450,6 +491,18 @@ export default function Chat({ token, user, onLogout }) {
 
             <ScrollArea className="messages-area" ref={scrollRef}>
               <div className="messages-container" data-testid="messages-container">
+                {hasMore && (
+                  <div style={{ textAlign: "center", padding: "0.5rem" }}>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={loadOlderMessages}
+                      disabled={loadingMore}
+                    >
+                      {loadingMore ? "Loading..." : "Load older messages"}
+                    </Button>
+                  </div>
+                )}
                 {messages.map((msg) => (
                   <div
                     key={msg.id}

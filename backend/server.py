@@ -139,6 +139,9 @@ class ConnectionManager:
             for conn in dead_connections:
                 self.disconnect(conn, user_id)
 
+    def get_user_rooms(self, user_id: str) -> list:
+        return [rid for rid, members in self.room_members.items() if user_id in members]
+
     async def broadcast_to_room(self, room_id: str, message: dict, exclude_user: Optional[str] = None):
         if room_id in self.room_members:
             for user_id in self.room_members[room_id]:
@@ -333,23 +336,28 @@ async def get_rooms(current_user: User = Depends(get_current_user)):
 async def get_room_messages(
     room_id: str,
     limit: int = 50,
+    before: Optional[str] = None,
     current_user: User = Depends(get_current_user)
 ):
     room = await db.rooms.find_one({"id": room_id, "members": current_user.id})
     if not room:
         raise HTTPException(status_code=403, detail="Access denied")
-    
+
+    query: dict = {"room_id": room_id}
+    if before:
+        query["timestamp"] = {"$lt": before}
+
     messages = await db.messages.find(
-        {"room_id": room_id},
+        query,
         {"_id": 0}
     ).sort("timestamp", -1).limit(limit).to_list(limit)
-    
+
     messages.reverse()
-    
+
     for msg in messages:
         if isinstance(msg["timestamp"], str):
             msg["timestamp"] = datetime.fromisoformat(msg["timestamp"])
-    
+
     return messages
 
 @api_router.get("/rooms/discover/all", response_model=List[Room])
@@ -559,12 +567,17 @@ async def websocket_endpoint(websocket: WebSocket, token: str):
                 }
                 await redis_manager.publish("chat_messages", redis_message)
                 logger.info(f"Message {message_id} published to Redis")
+                await manager.send_to_user(user_id, redis_message)
     
     except WebSocketDisconnect:
+        for room_id in manager.get_user_rooms(user_id):
+            await presence_manager.user_leave_room(room_id, user_id)
         manager.disconnect(websocket, user_id)
         await presence_manager.user_offline(user_id)
     except Exception as e:
         logger.error(f"WebSocket error for user {user_id}: {e}")
+        for room_id in manager.get_user_rooms(user_id):
+            await presence_manager.user_leave_room(room_id, user_id)
         manager.disconnect(websocket, user_id)
         await presence_manager.user_offline(user_id)
 
@@ -592,6 +605,7 @@ async def startup():
     await redis_manager.subscribe("chat_messages")
     await presence_manager.connect()
     asyncio.create_task(redis_manager.listen())
+    await db.messages.create_index([("room_id", 1), ("timestamp", -1)])
     logger.info("RelayChat backend started with presence tracking")
 
 @app.on_event("shutdown")

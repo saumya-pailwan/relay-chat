@@ -18,11 +18,15 @@ class PresenceManager:
     
     async def user_online(self, user_id: str, username: str):
         await self.redis_client.hset("presence:users", user_id, username)
+        await self.redis_client.incr(f"presence:connections:{user_id}")
         logger.info(f"User {username} ({user_id}) is now online")
-    
+
     async def user_offline(self, user_id: str):
-        await self.redis_client.hdel("presence:users", user_id)
-        logger.info(f"User {user_id} is now offline")
+        count = await self.redis_client.decr(f"presence:connections:{user_id}")
+        if count <= 0:
+            await self.redis_client.hdel("presence:users", user_id)
+            await self.redis_client.delete(f"presence:connections:{user_id}")
+        logger.info(f"User {user_id} disconnected (remaining connections: {max(count, 0)})")
     
     async def get_online_users(self) -> Dict[str, str]:
         return await self.redis_client.hgetall("presence:users")
