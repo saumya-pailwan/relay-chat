@@ -10,6 +10,7 @@ import { Send, LogOut, Plus, Users, Search, UserPlus, Paperclip } from "lucide-r
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
 const API = `${BACKEND_URL}/api`;
 const WS_URL = BACKEND_URL.replace("https://", "wss://").replace("http://", "ws://");
+const MESSAGE_PAGE_SIZE = 50;
 
 export default function Chat({ token, user, onLogout }) {
   const [rooms, setRooms] = useState([]);
@@ -31,6 +32,7 @@ export default function Chat({ token, user, onLogout }) {
   const [loadingMore, setLoadingMore] = useState(false);
   const fileInputRef = useRef(null);
   const scrollRef = useRef(null);
+  const suppressScrollRef = useRef(false);
 
   useEffect(() => {
     fetchRooms();
@@ -103,6 +105,10 @@ export default function Chat({ token, user, onLogout }) {
   }, [token]);
 
   useEffect(() => {
+    if (suppressScrollRef.current) {
+      suppressScrollRef.current = false;
+      return;
+    }
     if (scrollRef.current) {
       scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
     }
@@ -159,7 +165,7 @@ export default function Chat({ token, user, onLogout }) {
       setMessages(data);
       if (data.length > 0) {
         setOldestTimestamp(data[0].timestamp);
-        setHasMore(data.length === 50);
+        setHasMore(data.length === MESSAGE_PAGE_SIZE);
       }
     } catch (error) {
       toast.error("Failed to load messages");
@@ -171,11 +177,12 @@ export default function Chat({ token, user, onLogout }) {
     setLoadingMore(true);
     try {
       const response = await axios.get(
-        `${API}/rooms/${activeRoom.id}/messages?before=${encodeURIComponent(oldestTimestamp)}&limit=50`,
+        `${API}/rooms/${activeRoom.id}/messages?before=${encodeURIComponent(oldestTimestamp)}&limit=${MESSAGE_PAGE_SIZE}`,
         { headers: { Authorization: `Bearer ${token}` } }
       );
       const older = response.data;
       if (older.length > 0) {
+        suppressScrollRef.current = true;
         setMessages((prev) => [...older, ...prev]);
         setOldestTimestamp(older[0].timestamp);
         setHasMore(older.length === 50);
@@ -212,8 +219,8 @@ export default function Chat({ token, user, onLogout }) {
   const startDirectMessage = async (identifier) => {
     try {
       const response = await axios.post(
-        `${API}/rooms/direct`,
-        { identifier: identifier },
+        `${API}/rooms/direct?identifier=${encodeURIComponent(identifier)}`,
+        null,
         { headers: { Authorization: `Bearer ${token}` } }
       );
       toast.success("Direct message started!");
@@ -232,8 +239,8 @@ export default function Chat({ token, user, onLogout }) {
 
     try {
       const response = await axios.post(
-        `${API}/rooms/${activeRoom.id}/members/add`,
-        { user_email: memberEmail },
+        `${API}/rooms/${activeRoom.id}/members/add?user_email=${encodeURIComponent(memberEmail)}`,
+        null,
         { headers: { Authorization: `Bearer ${token}` } }
       );
       toast.success(response.data.message);

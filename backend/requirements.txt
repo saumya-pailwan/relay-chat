@@ -3,8 +3,9 @@ uvicorn[standard]
 motor
 redis
 passlib[bcrypt]
+bcrypt<4
 python-jose[cryptography]
-pydantic
+pydantic[email]
 python-dotenv
 aiofiles
 python-multipart

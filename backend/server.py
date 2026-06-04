@@ -34,8 +34,6 @@ client = AsyncIOMotorClient(mongo_url)
 db = client[os.environ['DB_NAME']]
 
 redis_url = os.environ.get('REDIS_URL', 'redis://localhost:6379')
-redis_client = None
-
 app = FastAPI()
 
 app.mount("/static", StaticFiles(directory="static"), name="static")
@@ -68,11 +66,6 @@ class User(BaseModel):
     email: str
     username: str
     created_at: datetime
-
-class MessageCreate(BaseModel):
-    room_id: str
-    content: str
-    attachments: List[str] = []
 
 class Message(BaseModel):
     model_config = ConfigDict(extra="ignore")
@@ -362,7 +355,16 @@ async def get_room_messages(
 
 @api_router.get("/rooms/discover/all", response_model=List[Room])
 async def discover_rooms(current_user: User = Depends(get_current_user)):
-    return []
+    rooms = await db.rooms.find(
+        {"type": "group", "members": {"$ne": current_user.id}},
+        {"_id": 0}
+    ).sort("created_at", -1).limit(50).to_list(50)
+
+    for room in rooms:
+        if isinstance(room["created_at"], str):
+            room["created_at"] = datetime.fromisoformat(room["created_at"])
+
+    return rooms
 
 @api_router.post("/rooms/{room_id}/join")
 async def join_room(room_id: str, current_user: User = Depends(get_current_user)):
@@ -572,12 +574,14 @@ async def websocket_endpoint(websocket: WebSocket, token: str):
     except WebSocketDisconnect:
         for room_id in manager.get_user_rooms(user_id):
             await presence_manager.user_leave_room(room_id, user_id)
+            await manager.leave_room(room_id, user_id)
         manager.disconnect(websocket, user_id)
         await presence_manager.user_offline(user_id)
     except Exception as e:
         logger.error(f"WebSocket error for user {user_id}: {e}")
         for room_id in manager.get_user_rooms(user_id):
             await presence_manager.user_leave_room(room_id, user_id)
+            await manager.leave_room(room_id, user_id)
         manager.disconnect(websocket, user_id)
         await presence_manager.user_offline(user_id)
 
